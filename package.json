@@ -1,0 +1,22 @@
+{
+  "name": "super-commit-support",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test:supercommit": "node --test scripts/supercommit/parse.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vinaym-dev/LifeCycleOfPayment.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/vinaym-dev/LifeCycleOfPayment/issues"
+  },
+  "homepage": "https://github.com/vinaym-dev/LifeCycleOfPayment#readme",
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}

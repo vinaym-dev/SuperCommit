@@ -1,0 +1,189 @@
+﻿name: Super Commit
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  supercommit:
+    runs-on: ubuntu-latest
+
+    # allows dispatching the Auto PR workflow
+    permissions:
+      contents: write
+
+    env:
+      JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+      TEMPO_TOKEN: ${{ secrets.TEMPO_TOKEN }}
+      TEMPO_AUTHOR_ACCOUNT_ID: ${{ secrets.TEMPO_AUTHOR_ACCOUNT_ID }}
+
+      # Category disabled
+      TEMPO_CATEGORY_ATTRIBUTE_KEY: ""
+      TEMPO_CATEGORY_KEY: ""
+      TEMPO_DEFAULT_CATEGORY_VALUE: ""
+
+      # Ready config
+      JIRA_READY_FIELD_ID: ${{ secrets.JIRA_READY_FIELD_ID }}
+      JIRA_READY_FIELD_TYPE: ${{ secrets.JIRA_READY_FIELD_TYPE }}
+      JIRA_READY_YES_VALUE: ${{ secrets.JIRA_READY_YES_VALUE }}
+
+      # Flip to "true" to test without touching Jira/Tempo and without dispatching PR
+      DRY_RUN: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Decide if this looks like a Super Commit
+        id: gate
+        shell: bash
+        run: |
+          set -e
+          MSG="${{ github.event.head_commit.message }}"
+          if [ -z "$MSG" ] || [ "$MSG" = "null" ]; then
+            MSG="$(git log -1 --pretty=%B || true)"
+          fi
+          FIRST_LINE="$(printf "%s" "$MSG" | head -n1 | tr -d '\r')"
+          echo "First line: $FIRST_LINE"
+
+          if echo "$FIRST_LINE" | grep -Eq '^Merge\b'; then
+            echo "run=no" >> $GITHUB_OUTPUT
+            echo "Reason: merge commit"
+            exit 0
+          fi
+
+          if echo "$FIRST_LINE" | grep -Eq '^[A-Z][A-Z0-9]{1,9}-[0-9]+\b'; then
+            echo "run=yes" >> $GITHUB_OUTPUT
+          else
+            echo "run=no" >> $GITHUB_OUTPUT
+            echo "Reason: first line does not start with ISSUE-KEY"
+          fi
+
+      - name: Install deps
+        if: ${{ steps.gate.outputs.run == 'yes' }}
+        run: npm ci || npm install
+
+      - name: Show last commit message
+        if: ${{ steps.gate.outputs.run == 'yes' }}
+        run: git log -1 --pretty=%B
+
+      - name: Normalize Jira base URL
+        if: ${{ steps.gate.outputs.run == 'yes' }}
+        id: normurl
+        shell: bash
+        run: |
+          set -e
+          RAW="$JIRA_BASE_URL"
+          CLEAN="$(printf "%s" "$RAW" | tr -d '\r\n' | sed -E 's/[[:space:]]+//g')"
+          CLEAN="$(printf "%s" "$CLEAN" | sed -E 's|/+?$||')"
+          CLEAN="$(printf "%s" "$CLEAN" | sed -E 's|(https://[^/]+).*|\1|')"
+          echo "resolved=$CLEAN" >> $GITHUB_OUTPUT
+          echo "Resolved Jira base URL: $CLEAN"
+
+      - name: Jira health check
+        if: ${{ steps.gate.outputs.run == 'yes' }}
+        shell: bash
+        run: |
+          set -e
+          BASE="${{ steps.normurl.outputs.resolved }}"
+          AUTH="$(printf "%s:%s" "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0 2>/dev/null || printf "%s:%s" "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64)"
+          echo "Probing $BASE/rest/api/3/serverInfo ..."
+          CODE="$(curl -sS -o /tmp/jira_health_body -w '%{http_code}' -H "Authorization: Basic $AUTH" -H "Accept: application/json" "$BASE/rest/api/3/serverInfo")"
+          echo "HTTP: $CODE"
+          head -n 3 /tmp/jira_health_body || true
+          if [ "$CODE" -ne 200 ]; then
+            echo "::error::Jira health check failed. Fix JIRA_BASE_URL secret"
+            exit 1
+          fi
+          echo "Jira looks healthy."
+
+      - name: Diagnose Jira issue + transitions
+        if: ${{ github.event_name == 'push' && steps.gate.outputs.run == 'yes' }}
+        shell: bash
+        run: |
+          set -e
+          BASE="${{ steps.normurl.outputs.resolved }}"
+          MSG="$(git log -1 --pretty=%B || true)"
+          KEY="$(printf "%s" "$MSG" | head -n1 | sed -n 's/^\([A-Z][A-Z0-9]\{1,9\}-[0-9]\+\).*/\1/p')"
+          echo "Issue key: $KEY"
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y && sudo apt-get install -y jq >/dev/null
+          fi
+          AUTH="$(printf "%s:%s" "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0 2>/dev/null || printf "%s:%s" "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64)"
+          echo "== Issue (fields=status,id) =="
+          curl -sS -H "Authorization: Basic $AUTH" -H "Accept: application/json" "$BASE/rest/api/3/issue/$KEY?fields=status,id" | jq .
+          echo "== Transitions =="
+          curl -sS -H "Authorization: Basic $AUTH" -H "Accept: application/json" "$BASE/rest/api/3/issue/$KEY/transitions" | jq .
+
+      - name: Sanity check Jira /myself from runner
+        if: ${{ steps.gate.outputs.run == 'yes' }}
+        shell: bash
+        run: |
+          BASE="${{ steps.normurl.outputs.resolved }}"
+          AUTH="$(printf "%s:%s" "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0 2>/dev/null || printf "%s:%s" "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64)"
+          curl -i -sS -H "Authorization: Basic $AUTH" "$BASE/rest/api/3/myself" | sed -n '1,40p'
+
+      - name: Apply Super Commit (Jira + Tempo)
+        id: apply
+        if: ${{ github.event_name == 'push' && steps.gate.outputs.run == 'yes' }}
+        env:
+          JIRA_BASE_URL: ${{ steps.normurl.outputs.resolved }}
+        run: |
+          COMMIT_MESSAGE="$(git log -1 --pretty=%B | tr -d '\r')"
+          export COMMIT_MESSAGE
+
+          echo "----- RAW LAST COMMIT (first 40 lines) -----"
+          echo "$COMMIT_MESSAGE" | sed -n '1,40p'
+          echo "----- FIRST LINE -----"
+          echo "$COMMIT_MESSAGE" | head -n1
+
+          echo "[DEBUG] JIRA_BASE_URL: $JIRA_BASE_URL"
+          echo "[DEBUG] JIRA_EMAIL set?: $([[ -n \"$JIRA_EMAIL\" ]] && echo set || echo missing)"
+          echo "[DEBUG] TEMPO_TOKEN set?: $([[ -n \"$TEMPO_TOKEN\" ]] && echo set || echo missing)"
+          echo "[DEBUG] TEMPO_AUTHOR_ACCOUNT_ID set?: $([[ -n \"$TEMPO_AUTHOR_ACCOUNT_ID\" ]] && echo set || echo missing)"
+
+          node scripts/supercommit/index.js
+
+      - name: Publish Super Commit outputs
+        if: ${{ steps.gate.outputs.run == 'yes' }}
+        run: |
+          mkdir -p sc_outputs
+          echo "${{ steps.apply.outputs.create_pr || 'no' }}" > sc_outputs/create_pr.txt
+          echo "create_pr=$(cat sc_outputs/create_pr.txt)"
+
+      - name: Upload Super Commit outputs
+        if: ${{ steps.gate.outputs.run == 'yes' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: supercommit-outputs
+          path: sc_outputs/
+          if-no-files-found: warn
+
+      # 🚀 Dispatch Auto PR workflow ONLY when requested (no dry-run)
+      - name: Signal Auto PR (repository_dispatch)
+        if: ${{ steps.apply.outputs.create_pr == 'yes' && env.DRY_RUN != 'true' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const [owner, repo] = process.env.GITHUB_REPOSITORY.split('/');
+            await github.rest.repos.createDispatchEvent({
+              owner, repo,
+              event_type: 'supercommit-pr-request',
+              client_payload: {
+                branch: process.env.GITHUB_REF_NAME,
+                sha: process.env.GITHUB_SHA,
+                message: process.env.COMMIT_MESSAGE
+              }
+            });
+            core.info('Dispatched repository_dispatch: supercommit-pr-request')
+
+      # ⛔ Inline PR creation removed — handled by Auto PR workflow via repository_dispatch

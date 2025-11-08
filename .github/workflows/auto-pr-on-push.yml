@@ -1,0 +1,113 @@
+﻿name: Auto PR on push to feature/*
+
+on:
+  repository_dispatch:
+    types: [supercommit-pr-request]
+
+concurrency:
+  group: auto-pr-${{ github.event.client_payload.branch }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  create_pr:
+    # Only run on feature/* branches
+    if: startsWith(github.event.client_payload.branch, 'feature/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Extract payload
+        id: payload
+        shell: bash
+        run: |
+          echo "branch=${{ github.event.client_payload.branch }}" >> "$GITHUB_OUTPUT"
+          echo "sha=${{ github.event.client_payload.sha }}"       >> "$GITHUB_OUTPUT"
+          echo "message<<EOF"                                    >> "$GITHUB_OUTPUT"
+          echo "${{ github.event.client_payload.message }}"      >> "$GITHUB_OUTPUT"
+          echo "EOF"                                             >> "$GITHUB_OUTPUT"
+
+      - name: Guard – skip merge commits
+        if: ${{ startsWith(steps.payload.outputs.message, 'Merge') }}
+        run: |
+          echo "Merge commit detected; skipping."
+          exit 0
+
+      - name: Verify commit message contains Validate Test
+        id: statuscheck
+        shell: bash
+        run: |
+          MSG="${{ steps.payload.outputs.message }}"
+          MSG="$(printf "%s" "$MSG" | tr -d '\r' | head -n1)"
+          if echo "$MSG" | grep -Eiq 'STATUS:[[:space:]]*Validate[[:space:]]+Test\b'; then
+            echo "ok=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Guard – message not targeting Validate Test
+        if: ${{ steps.statuscheck.outputs.ok != 'yes' }}
+        run: |
+          echo "Commit does not target Validate Test; skipping PR."
+          exit 0
+
+      - name: Derive base branch + Jira key
+        id: vars
+        shell: bash
+        run: |
+          DEFAULT="${{ github.event.repository.default_branch }}"
+          BRANCH="${{ steps.payload.outputs.branch }}"
+          KEY=""
+          if [[ "$BRANCH" =~ ([A-Z]+-[0-9]+) ]]; then
+            KEY="${BASH_REMATCH[1]}"
+          fi
+          echo "base=$DEFAULT" >> "$GITHUB_OUTPUT"
+          echo "key=$KEY"      >> "$GITHUB_OUTPUT"
+
+      - name: Check if PR already exists
+        id: findpr
+        uses: actions/github-script@v7
+        env:
+          BRANCH: ${{ steps.payload.outputs.branch }}
+        with:
+          script: |
+            const [owner, repo] = process.env.GITHUB_REPOSITORY.split('/');
+            const branch = process.env.BRANCH;
+            const prs = await github.rest.pulls.list({
+              owner, repo, head: `${owner}:${branch}`, state: 'open'
+            });
+            core.setOutput('exists', prs.data.length > 0 ? 'true' : 'false');
+
+      - name: PR already exists → skip
+        if: ${{ steps.findpr.outputs.exists == 'true' }}
+        run: |
+          echo "Open PR already exists for ${{ steps.payload.outputs.branch }}. Skipping."
+          exit 0
+
+      - name: Create PR via API
+        if: ${{ steps.findpr.outputs.exists != 'true' }}
+        uses: actions/github-script@v7
+        env:
+          BRANCH: ${{ steps.payload.outputs.branch }}
+          BASE: ${{ steps.vars.outputs.base }}
+          KEY: ${{ steps.vars.outputs.key }}
+        with:
+          script: |
+            const [owner, repo] = process.env.GITHUB_REPOSITORY.split('/');
+            const branch = process.env.BRANCH;
+            const base = process.env.BASE;
+            const key = process.env.KEY || branch;
+            const title = `${key} - Auto PR (Build → Validate Test)`;
+            const body = [
+              `Auto-created PR for **${key}** after Build → Validate Test transition.`,
+              '',
+              `Branch: ${branch}`,
+              `Jira: https://vinaym-demo.atlassian.net/browse/${key}`
+            ].join('\n');
+
+            const pr = await github.rest.pulls.create({
+              owner, repo, title, head: branch, base, body
+            });
+            core.info(`PR created: #${pr.data.number} ${pr.data.html_url}`);

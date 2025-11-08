@@ -1,0 +1,45 @@
+﻿name: Super Commit on PR approval
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  on_approval:
+    if: >
+      github.event.review.state == 'approved' &&
+      startsWith(github.event.pull_request.head.ref, 'feature/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Derive Jira key from branch
+        id: vars
+        shell: bash
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          if [[ "$BRANCH" =~ ([A-Z]+-[0-9]+) ]]; then
+            echo "key=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+          else
+            echo "key=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Transition Build → Validate Test (no Tempo log)
+        if: ${{ steps.vars.outputs.key != '' }}
+        env:
+          # Synthetic message: just drive the transition; LOG:0h means no Tempo call
+          COMMIT_MESSAGE: "${{ steps.vars.outputs.key }} STATUS:Validate Test LOG:0h COMMENT:Auto transition on PR approval"
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          TEMPO_TOKEN: ${{ secrets.TEMPO_TOKEN }}
+          TEMPO_AUTHOR_ACCOUNT_ID: ${{ secrets.TEMPO_AUTHOR_ACCOUNT_ID }}
+          DRY_RUN: "false"
+        run: node scripts/supercommit/index.js
