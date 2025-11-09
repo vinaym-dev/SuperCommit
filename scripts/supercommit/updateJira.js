@@ -97,3 +97,46 @@ export async function updateJiraStatus({
     console.log(`[Jira] Transition applied to "${match.to?.name}"`);
     return { ok: true, to: match.to?.name, transitionId: match.id };
 }
+
+// ----------------------------------------------------------------------
+// ✅ NEW: update Ready field only (customfield_10091)
+// ----------------------------------------------------------------------
+export async function updateJiraReadyField({
+    baseUrl,
+    email,
+    token,
+    issueKey,
+    readyValue = true,
+    dryRun = false,
+}) {
+    if (!baseUrl || !email || !token) throw new Error("Jira credentials missing.");
+    if (!issueKey) throw new Error("issueKey missing.");
+
+    const headers = {
+        Authorization: authHeader(email, token),
+        Accept: "application/json",
+        "Content-Type": "application/json",
+    };
+
+    const fieldKey = "customfield_10091"; // ✅ your actual Ready field ID
+    const payload = { fields: { [fieldKey]: readyValue } };
+
+    if (dryRun) {
+        console.log(`[Jira] [dryRun] Would set Ready=${readyValue} on ${issueKey}`);
+        return { dryRun: true, issueKey, fieldKey, value: readyValue };
+    }
+
+    const res = await fetch(`${baseUrl}/rest/api/3/issue/${issueKey}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+        const body = await asJson(res);
+        throw new Error(`[Jira] Ready field update failed: ${res.status} ${JSON.stringify(body)}`);
+    }
+
+    console.log(`[Jira] Ready field updated successfully → ${readyValue ? "Yes" : "No"} for ${issueKey}`);
+    return { ok: true, field: fieldKey, value: readyValue };
+}

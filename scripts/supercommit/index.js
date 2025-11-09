@@ -27,7 +27,7 @@ const env = {
         .filter(Boolean),
 
     // Jira Ready custom field
-    readyFieldId: process.env.JIRA_READY_FIELD_ID ?? "",
+    readyFieldId: process.env.JIRA_READY_FIELD_ID || "customfield_10091",   // ✅ default to actual field
     readyFieldType: (process.env.JIRA_READY_FIELD_TYPE ?? "").trim().toLowerCase(),
     readyYesValue: (process.env.JIRA_READY_YES_VALUE ?? "Yes").trim(),
 
@@ -127,7 +127,7 @@ async function updateReadyField(issueKey, readyValueBool) {
                 method: "PUT",
                 body: JSON.stringify(body)
             });
-            console.log(`[SuperCommit] Ready field updated on ${issueKey} -> ${label}.`);
+            console.log(`[SuperCommit] ✅ Ready field updated on ${issueKey} -> ${label}.`);
             return;
         } catch (e) {
             lastErr = e;
