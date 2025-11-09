@@ -12,7 +12,6 @@
 
 function sanitizeFirstLine(message) {
     const rawFirst = String(message ?? "").split(/\r?\n/)[0] ?? "";
-    // strip BOM + zero-width chars, then left-trim spaces/tabs; keep trailing spacing intact
     return rawFirst
         .replace(/^\uFEFF/, "")           // UTF-8 BOM
         .replace(/^[\u200B\u200C\u200D]+/, "") // ZWSP/ZWNJ/ZWJ
@@ -34,8 +33,6 @@ export function parseCommitMessage(message) {
     }
 
     const firstLine = sanitizeFirstLine(message);
-
-    // ---- helpers ------------------------------------------------------------
     const failFormat = (msg) => { throw new Error(`Super Commit format: ${msg}`); };
 
     const onlyOne = (name) => {
@@ -44,7 +41,6 @@ export function parseCommitMessage(message) {
     };
 
     const getToken = (name) => {
-        // Capture up to next ALL-CAPS token or end of line
         const re = new RegExp(String.raw`(?:^|\s)${name}:\s*([^\s].*?)\s*(?=(?:\s[A-Z]+:|$))`);
         const m = firstLine.match(re);
         return m ? m[1].trim() : null;
@@ -60,18 +56,15 @@ export function parseCommitMessage(message) {
         return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
     };
 
-    // ---- issue key ----------------------------------------------------------
     const keyMatch = firstLine.match(/^([A-Z][A-Z0-9]{1,9}-\d+)\b/);
     if (!keyMatch) {
         failFormat("missing or invalid JIRA issue key at start (e.g., ABC-123).");
     }
     const issue = keyMatch[1];
-    const issueKey = issue; // alias for callers that expect issueKey
+    const issueKey = issue;
 
-    // ---- uniqueness ---------------------------------------------------------
     ["STATUS", "LOG", "COMMENT", "PHASE", "DATE", "CAT", "READY"].forEach(onlyOne);
 
-    // ---- tokens -------------------------------------------------------------
     const status = tidy(getToken("STATUS"));
     const comment = tidy(getToken("COMMENT"));
     let phase = tidy(getToken("PHASE"));
@@ -79,8 +72,6 @@ export function parseCommitMessage(message) {
     if (!phase && catAlias) phase = catAlias;
 
     const dateToken = tidy(getToken("DATE"));
-
-    // READY: Yes/No/True/False/1/0/Y/N
     const readyToken = tidy(getToken("READY"));
     const ready = parseReady(readyToken);
 
@@ -90,7 +81,6 @@ export function parseCommitMessage(message) {
     let logDate = null;
 
     if (rawLog) {
-        // optional @date split
         let timePart = rawLog;
         let datePart = null;
         const atIdx = rawLog.indexOf("@");
@@ -99,12 +89,10 @@ export function parseCommitMessage(message) {
             datePart = rawLog.slice(atIdx + 1).trim();
         }
 
-        // 1) decimal hours
         let m = timePart.match(/^(\d+(?:\.\d+)?)h$/i);
         if (m) {
             logHours = parseFloat(m[1]);
         } else {
-            // 2) h:mm
             m = timePart.match(/^(\d+):(\d{1,2})$/);
             if (m) {
                 const h = parseInt(m[1], 10);
@@ -112,7 +100,6 @@ export function parseCommitMessage(message) {
                 if (mins >= 60) failFormat("LOG minutes must be < 60 for h:mm.");
                 logHours = h + mins / 60;
             } else {
-                // 3) minutes
                 m = timePart.match(/^(\d+)m$/i);
                 if (m) {
                     const minutes = parseInt(m[1], 10);
@@ -123,11 +110,19 @@ export function parseCommitMessage(message) {
             }
         }
 
-        if (!(logHours > 0)) {
-            failFormat("LOG hours must be a positive number.");
+        // ✅ Allow 0h for automated workflow commits
+        if (!(logHours >= 0)) {
+            failFormat("LOG hours must be a non-negative number.");
         }
 
-        // date validation: format vs calendar validity
+        // ✅ If this is an automated system message (like Auto transition / Ready flip), override to 0h safely
+        if (firstLine.match(/Auto transition|Auto Ready flip/i) && logHours === 0) {
+            console.log("[SuperCommit] System-driven commit detected: allowing LOG:0h.");
+        } else if (logHours === 0) {
+            // still fail for manual 0h commits
+            failFormat("Manual commits must have LOG > 0h.");
+        }
+
         if (datePart) {
             if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
                 failFormat("date must be yyyy-mm-dd.");
@@ -148,7 +143,6 @@ export function parseCommitMessage(message) {
             logDate = null;
         }
     } else {
-        // No LOG; still validate DATE if present
         if (dateToken) {
             if (!/^\d{4}-\d{2}-\d{2}$/.test(dateToken)) {
                 failFormat("date must be yyyy-mm-dd.");
