@@ -292,13 +292,18 @@ async function main() {
                     const goingTo = (best?.to?.name ?? "").trim().toLowerCase();
                     const from = (current?.status ?? "").trim().toLowerCase();
                     if (from === "build" && goingTo === "validate test") {
+                        console.log("[SuperCommit] Forcing Ready=No for Build → Validate Test transition");
+                        try {
+                            await updateReadyField(issueKey, false);
+                        } catch (err) {
+                            console.warn(`[SuperCommit][WARN] Ready=No update failed: ${err.message}`);
+                        }
+
                         setStepOutput("create_pr", "yes");
                         console.log("[SuperCommit] PR trigger enabled (Build → Validate Test).");
                     }
                 } else {
                     console.log(`[SuperCommit][DRY_RUN] Would apply Jira transition id=${best.id}.`);
-
-                    // 🧩 DRY_RUN mode → never set PR trigger
                     console.log("[SuperCommit][DRY_RUN] Skipping PR trigger because DRY_RUN=true.");
                 }
             }
