@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ✅ Extract commit payload
       - name: Extract payload
         id: payload
         shell: bash
@@ -29,12 +30,14 @@ jobs:
           echo "${{ github.event.client_payload.message }}"      >> "$GITHUB_OUTPUT"
           echo "EOF"                                             >> "$GITHUB_OUTPUT"
 
+      # ✅ Guard 1 – Skip merge commits (prevents re-trigger from main/root merges)
       - name: Guard – skip merge commits
         if: ${{ startsWith(steps.payload.outputs.message, 'Merge') }}
         run: |
-          echo "Merge commit detected; skipping."
+          echo "Merge commit detected; skipping Auto PR trigger."
           exit 0
 
+      # ✅ Guard 2 – Only proceed if commit targets Validate Test
       - name: Verify commit message contains Validate Test
         id: statuscheck
         shell: bash
@@ -53,6 +56,7 @@ jobs:
           echo "Commit does not target Validate Test; skipping PR."
           exit 0
 
+      # ✅ Derive base branch + Jira key
       - name: Derive base branch + Jira key
         id: vars
         shell: bash
@@ -66,6 +70,7 @@ jobs:
           echo "base=$DEFAULT" >> "$GITHUB_OUTPUT"
           echo "key=$KEY"      >> "$GITHUB_OUTPUT"
 
+      # ✅ Enhanced PR existence check – search across all PRs (open, closed, merged)
       - name: Check if PR already exists
         id: findpr
         uses: actions/github-script@v7
@@ -77,17 +82,31 @@ jobs:
           script: |
             const [owner, repo] = process.env.GITHUB_REPOSITORY.split('/');
             const branch = process.env.BRANCH;
-            const prs = await github.rest.pulls.list({
-              owner, repo, head: `${owner}:${branch}`, state: 'open'
-            });
-            core.setOutput('exists', prs.data.length > 0 ? 'true' : 'false');
 
+            // Fetch PRs across all states to avoid duplicates
+            const prs = await github.rest.pulls.list({
+              owner,
+              repo,
+              head: `${owner}:${branch}`,
+              state: 'all'
+            });
+
+            // Check if any PR (open, closed, merged) already exists for this branch
+            const exists = prs.data.some(pr =>
+              pr.head.ref === branch &&
+              pr.title.includes('Auto PR (Build → Validate Test)')
+            );
+
+            core.setOutput('exists', exists ? 'true' : 'false');
+
+      # ✅ Skip if a PR (open or closed) already exists
       - name: PR already exists → skip
         if: ${{ steps.findpr.outputs.exists == 'true' }}
         run: |
-          echo "Open PR already exists for ${{ steps.payload.outputs.branch }}. Skipping."
+          echo "PR already exists (open/closed) for ${{ steps.payload.outputs.branch }}. Skipping Auto PR creation."
           exit 0
 
+      # ✅ Create PR via GitHub API (existing logic, unchanged)
       - name: Create PR via API
         if: ${{ steps.findpr.outputs.exists != 'true' }}
         uses: actions/github-script@v7
