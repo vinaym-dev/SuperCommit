@@ -36,25 +36,12 @@ jobs:
             echo "key=" >> $GITHUB_OUTPUT
           fi
 
-      # ✅ Step 1: Transition Build → Validate Test (retained for consistency)
-      #    This ensures Jira stays in Validate Test even on merge.
-      - name: Transition Build → Validate Test (no Tempo log)
-        if: ${{ steps.vars.outputs.key != '' }}
-        env:
-          COMMIT_MESSAGE: "${{ steps.vars.outputs.key }} STATUS:Validate Test LOG:0h COMMENT:Auto transition on PR merge"
-          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
-          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
-          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          TEMPO_TOKEN: ${{ secrets.TEMPO_TOKEN }}
-          TEMPO_AUTHOR_ACCOUNT_ID: ${{ secrets.TEMPO_AUTHOR_ACCOUNT_ID }}
-          DRY_RUN: "false"
-        run: node scripts/supercommit/index.js
-
-      # ✅ Step 2: Update Ready = Yes automatically after merge
+      # ✅ Step 1: Auto-update Ready = Yes automatically after successful Auto PR merge
+      #    ⛔ Removed STATUS transition to prevent Jira issue from moving forward automatically.
       - name: Auto-update Ready=Yes for merged Auto PRs
         if: ${{ steps.vars.outputs.key != '' }}
         env:
-          COMMIT_MESSAGE: "${{ steps.vars.outputs.key }} READY:Yes COMMENT:Auto Ready flip on PR merge"
+          COMMIT_MESSAGE: "${{ steps.vars.outputs.key }} READY:Yes COMMENT:Auto Ready flip on merged Auto PR"
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
